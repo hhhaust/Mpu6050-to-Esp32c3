@@ -1,0 +1,1042 @@
+
+
+
+
+
+
+
+
+
+
+//                ----------------------------------------------
+//                ______________________________________________
+
+
+
+//  This is another version of the same code with added Arduino IDE Serail Monitor function
+
+
+
+//                ----------------------------------------------
+//                ______________________________________________
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* ============================================
+  I2Cdev device library code is placed under the MIT license
+  Copyright (c) 2012 Jeff Rowberg
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+  THE SOFTWARE.
+  ===============================================
+*/
+
+
+
+// I2Cdev and MPU6050 must be installed as libraries, or else the .cpp/.h files
+// for both classes must be in the include path of your project
+#include "I2Cdev.h"
+
+#include "MPU6050_6Axis_MotionApps612.h"
+//#include "MPU6050.h" // not necessary if using MotionApps include file
+
+// Arduino Wire library is required if I2Cdev I2CDEV_ARDUINO_WIRE implementation
+// is used in I2Cdev.h
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+#include "Wire.h"
+#endif
+
+
+//MIDI Stuff
+#include <BLEMIDI_Transport.h>
+#include <hardware/BLEMIDI_ESP32_NimBLE.h>
+
+
+//BLEMIDI_CREATE_DEFAULT_INSTANCE()
+BLEMIDI_CREATE_INSTANCE("Haust01", MIDI)
+const int MIDICHANNEL = 4 ;
+
+// class default I2C address is 0x68
+// specific I2C addresses may be passed as a parameter here
+// AD0 low = 0x68 (default for SparkFun breakout and InvenSense evaluation board)
+// AD0 high = 0x69
+MPU6050 mpu;
+//MPU6050 mpu(0x69); // <-- use for AD0 high
+
+
+// uncomment "OUTPUT_READABLE_YAWPITCHROLL" if you want to see the yaw/
+// pitch/roll angles (in degrees) calculated from the quaternions coming
+// from the FIFO. Note this also requires gravity vector calculations.
+// Also note that yaw/pitch/roll angles suffer from gimbal lock (for
+// more info, see: http://en.wikipedia.org/wiki/Gimbal_lock)
+#define OUTPUT_READABLE_YAWPITCHROLL
+
+// uncomment "OUTPUT_READABLE_EULER" if you want to see Euler angles
+// (in degrees) calculated from the quaternions coming from the FIFO.
+// Note that Euler angles suffer from gimbal lock (for more info, see
+// http://en.wikipedia.org/wiki/Gimbal_lock)
+//#define OUTPUT_READABLE_EULER
+
+// uncomment "OUTPUT_READABLE_REALACCEL" if you want to see acceleration
+// components with gravity removed. This acceleration reference frame is
+// not compensated for orientation, so +X is always +X according to the
+// sensor, just without the effects of gravity. If you want acceleration
+// compensated for orientation, us OUTPUT_READABLE_WORLDACCEL instead.
+//#define OUTPUT_READABLE_REALACCEL
+
+// uncomment "OUTPUT_READABLE_WORLDACCEL" if you want to see acceleration
+// components with gravity removed and adjusted for the world frame of
+// reference (yaw is relative to initial orientation, since no magnetometer
+// is present in this case). Could be quite handy in some cases.
+#define OUTPUT_READABLE_WORLDACCEL
+
+
+
+#define INTERRUPT_PIN 2  // use pin 2 on Arduino Uno & most boards
+// #define LED_PIN LEDG // (Arduino is 13, Teensy is 11, Teensy++ is 6)
+bool blinkState = false;
+
+// MPU control/status vars
+bool dmpReady = false;  // set true if DMP init was successful
+uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
+uint8_t devStatus;      // return status after each device operation (0 = success, !0 = error)
+uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
+uint16_t fifoCount;     // count of all bytes currently in FIFO
+uint8_t fifoBuffer[64]; // FIFO storage buffer
+
+// orientation/motion vars
+Quaternion q;           // [w, x, y, z]         quaternion container
+VectorInt16 aa;         // [x, y, z]            accel sensor measurements
+VectorInt16 gy;         // [x, y, z]            gyro sensor measurements
+VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
+VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
+VectorFloat gravity;    // [x, y, z]            gravity vector
+float euler[3];         // [psi, theta, phi]    Euler angle container
+float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+
+// packet structure for InvenSense teapot demo
+uint8_t teapotPacket[14] = { '$', 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, '\r', '\n' };
+
+
+
+// ================================================================
+// ===               INTERRUPT DETECTION ROUTINE                ===
+// ================================================================
+
+volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
+void dmpDataReady() {
+  mpuInterrupt = true;
+}
+
+
+
+// ================================================================
+// ===                      MIDI STUFF                          ===
+// ================================================================
+
+bool isConnected = false;
+
+int led = 11;
+
+const long timer1 = 250;
+const long timer2 = 250;
+const long timer3 = 250;
+const long timer4 = 250;
+const long timer5 = 250;
+const long timer6 = 250;
+const long timer7 = 250;
+const long timer8 = 70;
+
+static bool note1IsAlreadyOn = false;
+static bool note2IsAlreadyOn = false;
+static bool note3IsAlreadyOn = false;
+static bool note4IsAlreadyOn = false;
+static bool note5IsAlreadyOn = false;
+static bool note6IsAlreadyOn = false;
+static bool note7IsAlreadyOn = false;
+static bool note8IsAlreadyOn = false;
+
+unsigned long currentMillis1 = 0;
+unsigned long currentMillis2 = 0;
+unsigned long currentMillis3 = 0;
+unsigned long currentMillis4 = 0;
+unsigned long currentMillis5 = 0;
+unsigned long currentMillis6 = 0;
+unsigned long currentMillis7 = 0;
+unsigned long currentMillis8 = 0;
+
+
+// ================================================================
+// ===                      SWITCH STUFF                        ===
+// ================================================================
+
+
+const int Schalter1_Pin = 9;
+const int Schalter2_Pin = 8;
+const int Schalter3_Pin = 20;
+
+// ================================================================
+// ===                      INITIAL SETUP                       ===
+// ================================================================
+
+void setup() {
+
+ Serial.begin(115200);
+  Serial.println(F("Initializing I2C devices..."));
+
+  delay(5000);
+
+  pinMode(led, OUTPUT);
+  digitalWrite(led, HIGH);
+  delay(200);
+  digitalWrite(led, LOW);
+  delay(200);
+  digitalWrite(led, HIGH);
+  delay(200);
+  digitalWrite(led, LOW);
+
+
+  // join I2C bus (I2Cdev library doesn't do this automatically)
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+  Wire.begin();
+  Wire.setClock(400000); // 400kHz I2C clock. Comment this line if having compilation difficulties
+#elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
+  Fastwire::setup(400, true);
+#endif
+
+  // initialize device
+  mpu.initialize();
+  pinMode(INTERRUPT_PIN, INPUT);
+
+ // verify connection
+    Serial.println(F("Testing device connections..."));
+    Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
+
+
+  // load and configure the DMP
+  devStatus = mpu.dmpInitialize();
+
+
+  if (devStatus == 0) {
+    // Calibration Time: generate offsets and calibrate our MPU6050
+    mpu.CalibrateAccel(30);
+    mpu.CalibrateGyro(30);
+    //   Serial.println();
+    mpu.PrintActiveOffsets();
+    // turn on the DMP, now that it's ready
+    //   Serial.println(F("Enabling DMP..."));
+    mpu.setDMPEnabled(true);
+
+    // enable Arduino interrupt detection
+    attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
+    mpuIntStatus = mpu.getIntStatus();
+
+  Serial.println(F("DMP ready! Waiting for first interrupt..."));
+    // set our DMP Ready flag so the main loop() function knows it's okay to use it
+    dmpReady = true;
+
+    // get expected DMP packet size for later comparison
+    packetSize = mpu.dmpGetFIFOPacketSize();
+  } else {
+    // ERROR!
+    // 1 = initial memory load failed
+    // 2 = DMP configuration updates failed
+            Serial.print(F("DMP Initialization failed (code "));
+        Serial.print(devStatus);
+        Serial.println(F(")"));
+  }
+
+
+  //Midi_Stuff
+  MIDI.begin();
+
+  BLEMIDI.setHandleConnected([]() {
+    isConnected = true;
+    digitalWrite(led, HIGH);
+  });
+
+  BLEMIDI.setHandleDisconnected([]() {
+    isConnected = false;
+    digitalWrite(led, LOW);
+  });
+
+  MIDI.setHandleNoteOn([](byte channel, byte note, byte velocity) {
+    digitalWrite(led, LOW);
+  });
+  MIDI.setHandleNoteOff([](byte channel, byte note, byte velocity) {
+    digitalWrite(led, HIGH);
+  });
+
+
+  //Schalterauslesen
+  pinMode(Schalter1_Pin, INPUT);
+  pinMode(Schalter2_Pin, INPUT);
+  pinMode(Schalter3_Pin, INPUT);
+
+    digitalWrite(Schalter1_Pin, LOW);    
+    digitalWrite(Schalter2_Pin, LOW);    
+    digitalWrite(Schalter3_Pin, LOW);
+    
+  int Schalter1_Wert;
+  int Schalter2_Wert;
+  int Schalter3_Wert;
+
+  Schalter1_Wert = digitalRead( Schalter1_Pin );
+  Schalter2_Wert = digitalRead( Schalter2_Pin );
+  Schalter3_Wert = digitalRead( Schalter3_Pin );
+
+  // ================================================================
+  // ===               Schalterposition 0-0-0                     ===
+  // ================================================================
+
+
+  if (( Schalter1_Wert == LOW) && ( Schalter2_Wert == LOW) && ( Schalter3_Wert == LOW)) {
+    while (1) {
+      digitalWrite(led, LOW);
+      delay(200);
+      digitalWrite(led, HIGH);
+      delay(200);
+    }
+  }
+
+  // ================================================================
+  // ===               Schalterposition 0-0-1                     ===
+  // ================================================================
+
+
+  if (( Schalter1_Wert == LOW) && ( Schalter2_Wert == LOW) && ( Schalter3_Wert == HIGH)) {
+    while (1) {
+
+      if (!dmpReady) return;
+      // read a packet from FIFO
+      if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { // Get the Latest packet
+
+
+#ifdef OUTPUT_READABLE_YAWPITCHROLL
+        // display Euler angles in degrees
+        mpu.dmpGetQuaternion(&q, fifoBuffer);
+        mpu.dmpGetGravity(&gravity, &q);
+        mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+
+#endif
+
+
+        int bendx = ypr[0] * 180 / M_PI;
+        int bend1 = map(bendx, -180, 180, -8192, 8191);
+
+  
+
+        if  ((bendx > -180) && (bendx < -135)) {
+          if (note1IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note1IsAlreadyOn = true;
+            MIDI.sendNoteOn (62, 100, MIDICHANNEL);
+            currentMillis1 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note1IsAlreadyOn && millis() - currentMillis1 >= timer1) {
+            note1IsAlreadyOn = false;
+            MIDI.sendNoteOff (62, 100, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }
+
+
+        if  ((bendx > -135) && (bendx < -90)) {
+          if (note2IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note2IsAlreadyOn = true;
+            MIDI.sendNoteOn (63, 100, MIDICHANNEL);
+            currentMillis2 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note2IsAlreadyOn && millis() - currentMillis2 >= timer2) {
+            note2IsAlreadyOn = false;
+            MIDI.sendNoteOff (63, 100, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }
+
+
+
+        if  ((bendx > -90) && (bendx < -45)) {
+          if (note3IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note3IsAlreadyOn = true;
+            MIDI.sendNoteOn (64, 100, MIDICHANNEL);
+            currentMillis3 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note3IsAlreadyOn && millis() - currentMillis3 >= timer3) {
+            note3IsAlreadyOn = false;
+            MIDI.sendNoteOff (64, 100, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }
+
+
+        if  ((bendx > -45) && (bendx < 0)) {
+          if (note4IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note4IsAlreadyOn = true;
+            MIDI.sendNoteOn (65, 100, MIDICHANNEL);
+            currentMillis4 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note4IsAlreadyOn && millis() - currentMillis4 >= timer4) {
+            note4IsAlreadyOn = false;
+            MIDI.sendNoteOff (65, 100, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }
+
+
+               if  ((bendx > 0) && (bendx < 45)) {
+          if (note5IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note5IsAlreadyOn = true;
+            MIDI.sendNoteOn (66, 100, MIDICHANNEL);
+            currentMillis5 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note5IsAlreadyOn && millis() - currentMillis5 >= timer5) {
+            note5IsAlreadyOn = false;
+            MIDI.sendNoteOff (66, 100, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }
+
+               if  ((bendx > 45) && (bendx < 90)) {
+          if (note6IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note6IsAlreadyOn = true;
+            MIDI.sendNoteOn (67, 100, MIDICHANNEL);
+            currentMillis6 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note6IsAlreadyOn && millis() - currentMillis6 >= timer6) {
+            note6IsAlreadyOn = false;
+            MIDI.sendNoteOff (67, 100, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }        
+
+
+          if  ((bendx > 90) && (bendx < 135)) {
+          if (note7IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note7IsAlreadyOn = true;
+            MIDI.sendNoteOn (68, 100, MIDICHANNEL);
+            currentMillis7 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note7IsAlreadyOn && millis() - currentMillis7 >= timer7) {
+            note7IsAlreadyOn = false;
+            MIDI.sendNoteOff (68, 100, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }
+
+
+ 
+          if  ((bendx > 135) && (bendx < 180)) {
+          if (note8IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note8IsAlreadyOn = true;
+            MIDI.sendNoteOn (69, 100, MIDICHANNEL);
+            currentMillis8 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note8IsAlreadyOn && millis() - currentMillis8 >= timer8) {
+            note8IsAlreadyOn = false;
+            MIDI.sendNoteOff (69, 100, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }                       
+
+
+      }
+    }
+
+
+  }
+
+  // ================================================================
+  // ===               Schalterposition 0-1-0                     ===
+  // ================================================================
+
+
+  if (( Schalter1_Wert == LOW) && ( Schalter2_Wert == HIGH) && ( Schalter3_Wert == LOW)) {
+    while (1) {
+
+      // if programming failed, don't try to do anything
+      if (!dmpReady) return;
+      // read a packet from FIFO
+      if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { // Get the Latest packet
+
+
+#ifdef OUTPUT_READABLE_YAWPITCHROLL
+        // display Euler angles in degrees
+        mpu.dmpGetQuaternion(&q, fifoBuffer);
+        mpu.dmpGetGravity(&gravity, &q);
+        mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+#endif
+
+
+        //MIDI STUFF
+        //   MIDI.read();
+
+
+        int bendx = ypr[0] * 180 / M_PI;
+        int bendx1 = map(bendx, -180, 180, -8192, 8191);
+
+        int bendy = ypr[1] * 180 / M_PI;
+        int bendy1 = map(bendy, -180, 180, 0, 127);
+
+        int bendz = ypr[2] * 180 / M_PI;
+        int bendz1 = map(bendz, -180, 180, 0, 127);
+
+        //  PitchValues;
+        MIDI.sendPitchBend(bendx1, MIDICHANNEL);
+        MIDI.sendAfterTouch(bendz1, MIDICHANNEL);
+
+      }
+
+    }
+
+  }
+
+  // ================================================================
+  // ===               Schalterposition 1-0-0                     ===
+  // ================================================================
+
+
+  if (( Schalter1_Wert == HIGH) && ( Schalter2_Wert == LOW) && ( Schalter3_Wert == LOW)) {
+    while (1) {
+
+      // if programming failed, don't try to do anything
+      if (!dmpReady) return;
+      // read a packet from FIFO
+      if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { // Get the Latest packet
+
+
+#ifdef OUTPUT_READABLE_YAWPITCHROLL
+        // display Euler angles in degrees
+        mpu.dmpGetQuaternion(&q, fifoBuffer);
+        mpu.dmpGetGravity(&gravity, &q);
+        mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+#endif
+
+
+        int bendx = ypr[0] * 180 / M_PI;
+        int bendx1 = map(bendx, -180, 180, 0, 127);
+
+        int bendy = ypr[1] * 180 / M_PI;
+        int bendy1 = map(bendy, -180, 180, 0, 127);
+
+        int bendz = ypr[2] * 180 / M_PI;
+        int bendz1 = map(bendz, -180, 180, 0, 127);
+
+
+          MIDI.sendControlChange(3, bendx1, 1);
+          MIDI.sendControlChange(4, bendy1, 1);
+          MIDI.sendControlChange(8, bendz1, 1);
+     
+      }
+
+    }
+
+  }
+
+  // ================================================================
+  // ===               Schalterposition 0-1-1                     ===
+  // ================================================================
+
+
+  if (( Schalter1_Wert == LOW) && ( Schalter2_Wert == HIGH) && ( Schalter3_Wert == HIGH)) {
+    while (1) {
+
+      // if programming failed, don't try to do anything
+      if (!dmpReady) return;
+      // read a packet from FIFO
+      if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { // Get the Latest packet
+
+
+
+#ifdef OUTPUT_READABLE_WORLDACCEL
+        // display initial world-frame acceleration, adjusted to remove gravity
+        // and rotated based on known orientation from quaternion
+        mpu.dmpGetQuaternion(&q, fifoBuffer);
+        mpu.dmpGetAccel(&aa, fifoBuffer);
+        mpu.dmpGetGravity(&gravity, &q);
+        mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
+        mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+#endif
+
+
+
+        int accx = map(aaWorld.x, -30000, 30000, 0, 127);
+        int accy = map(aaWorld.y, -30000, 30000, 0, 127);
+        int accz = map(aaWorld.z, -30000, 30000, 0, 127);
+
+          MIDI.sendControlChange(66, accx, MIDICHANNEL);
+          MIDI.sendControlChange(67, accy, MIDICHANNEL);
+          MIDI.sendControlChange(68, accz, MIDICHANNEL);
+
+
+      }
+
+    }
+
+  }
+
+  // ================================================================
+  // ===               Schalterposition 1-0-1                     ===
+  // ================================================================
+
+
+  if (( Schalter1_Wert == HIGH) && ( Schalter2_Wert == LOW) && ( Schalter3_Wert == HIGH)) {
+    while (1) {
+
+      if (!dmpReady) return;
+      // read a packet from FIFO
+      if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { // Get the Latest packet
+
+
+#ifdef OUTPUT_READABLE_YAWPITCHROLL
+        // display Euler angles in degrees
+        mpu.dmpGetQuaternion(&q, fifoBuffer);
+        mpu.dmpGetGravity(&gravity, &q);
+        mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+
+#endif
+
+
+
+#ifdef OUTPUT_READABLE_WORLDACCEL
+        // display initial world-frame acceleration, adjusted to remove gravity
+        // and rotated based on known orientation from quaternion
+        mpu.dmpGetQuaternion(&q, fifoBuffer);
+        mpu.dmpGetAccel(&aa, fifoBuffer);
+        mpu.dmpGetGravity(&gravity, &q);
+        mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
+        mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+
+#endif
+
+        int bendx = ypr[0] * 180 / M_PI;
+        int bend1 = map(bendx, -180, 180, -8192, 8191);
+
+  
+
+        if  ((aaWorld.z < -15000) && (bendx > -180) && (bendx < -135)) {
+          if (note1IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note1IsAlreadyOn = true;
+            MIDI.sendNoteOn (60, 127, MIDICHANNEL);
+            currentMillis1 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note1IsAlreadyOn && millis() - currentMillis1 >= timer8) {
+            note1IsAlreadyOn = false;
+            MIDI.sendNoteOff (60, 127, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }
+
+
+        if  ((aaWorld.z < -15000) && (bendx > -135) && (bendx < -90)) {
+          if (note2IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note2IsAlreadyOn = true;
+            MIDI.sendNoteOn (61, 127, MIDICHANNEL);
+            currentMillis2 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note2IsAlreadyOn && millis() - currentMillis2 >= timer8) {
+            note2IsAlreadyOn = false;
+            MIDI.sendNoteOff (61, 127, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }
+
+
+
+        if  ((aaWorld.z < -15000) && (bendx > -90) && (bendx < -45)) {
+          if (note3IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note3IsAlreadyOn = true;
+            MIDI.sendNoteOn (62, 127, MIDICHANNEL);
+            currentMillis3 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note3IsAlreadyOn && millis() - currentMillis3 >= timer8) {
+            note3IsAlreadyOn = false;
+            MIDI.sendNoteOff (62, 127, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }
+
+
+        if  ((aaWorld.z < -15000) && (bendx > -45) && (bendx < 0)) {
+          if (note4IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note4IsAlreadyOn = true;
+            MIDI.sendNoteOn (63, 127, MIDICHANNEL);
+            currentMillis4 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note4IsAlreadyOn && millis() - currentMillis4 >= timer8) {
+            note4IsAlreadyOn = false;
+            MIDI.sendNoteOff (63, 127, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }
+
+
+               if  ((aaWorld.z < -15000) && (bendx > 0) && (bendx < 45)) {
+          if (note5IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note5IsAlreadyOn = true;
+            MIDI.sendNoteOn (64, 127, MIDICHANNEL);
+            currentMillis5 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note5IsAlreadyOn && millis() - currentMillis5 >= timer8) {
+            note5IsAlreadyOn = false;
+            MIDI.sendNoteOff (64, 127, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }
+
+               if  ((aaWorld.z < -15000) && (bendx > 45) && (bendx < 90)) {
+          if (note6IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note6IsAlreadyOn = true;
+            MIDI.sendNoteOn (65, 127, MIDICHANNEL);
+            currentMillis6 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note6IsAlreadyOn && millis() - currentMillis6 >= timer8) {
+            note6IsAlreadyOn = false;
+            MIDI.sendNoteOff (65, 127, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }        
+
+
+          if  ((aaWorld.z < -15000) && (bendx > 90) && (bendx < 135)) {
+          if (note7IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note7IsAlreadyOn = true;
+            MIDI.sendNoteOn (66, 127, MIDICHANNEL);
+            currentMillis7 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note7IsAlreadyOn && millis() - currentMillis7 >= timer8 ) {
+            note7IsAlreadyOn = false;
+            MIDI.sendNoteOff (66, 127, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }
+
+
+ 
+          if  ((aaWorld.z < -15000) && (bendx > 135) && (bendx < 180)) {
+          if (note8IsAlreadyOn) {
+            //Do nothing different
+          } else {
+            note8IsAlreadyOn = true;
+            MIDI.sendNoteOn (67, 127, MIDICHANNEL);
+            currentMillis8 = millis();
+          }
+        } else {
+          //button is not currently pressed
+          if (note8IsAlreadyOn && millis() - currentMillis8 >= timer8) {
+            note8IsAlreadyOn = false;
+            MIDI.sendNoteOff (67, 127, MIDICHANNEL);
+          } else {
+            //Do nothing different
+          }
+        }                       
+
+
+      }
+    }
+
+
+  }
+  // ================================================================
+  // ===               Schalterposition 1-1-0                     ===
+  // ================================================================
+
+
+  if (( Schalter1_Wert == HIGH) && ( Schalter2_Wert == HIGH) && ( Schalter3_Wert == LOW)) {
+    while (1) {
+
+      // if programming failed, don't try to do anything
+      if (!dmpReady) return;
+      // read a packet from FIFO
+      if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { // Get the Latest packet
+
+
+#ifdef OUTPUT_READABLE_YAWPITCHROLL
+        // display Euler angles in degrees
+        mpu.dmpGetQuaternion(&q, fifoBuffer);
+        mpu.dmpGetGravity(&gravity, &q);
+        mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+#endif
+
+
+        int bendz = ypr[2] * 180 / M_PI;
+      if (bendz < 60) {
+        bendz = 180;
+      }
+
+        int bendz1 = map(bendz, 180, 60, 0, 127);
+
+          MIDI.sendControlChange(11, bendz1, 1);
+          //FLUMMI1 = CC9 //Flummi2 = CC11
+          
+     
+      }
+
+    }
+
+  }
+
+
+  // ================================================================
+  // ===               Schalterposition 1-1-1                     ===
+  // ================================================================
+
+
+  if (( Schalter1_Wert == HIGH) && ( Schalter2_Wert == HIGH) && ( Schalter3_Wert == HIGH)) {
+    while (1) {
+
+      // if programming failed, don't try to do anything
+      if (!dmpReady) return;
+      // read a packet from FIFO
+      if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { // Get the Latest packet
+
+
+
+#ifdef OUTPUT_READABLE_WORLDACCEL
+        // display initial world-frame acceleration, adjusted to remove gravity
+        // and rotated based on known orientation from quaternion
+        mpu.dmpGetQuaternion(&q, fifoBuffer);
+        mpu.dmpGetAccel(&aa, fifoBuffer);
+        mpu.dmpGetGravity(&gravity, &q);
+        mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
+        mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+#endif
+
+
+
+        int accx = map(aaWorld.x, -30000, 30000, -8192, 8191);
+        int accy = map(aaWorld.y, -30000, 30000, 0, 127);
+        int accz = map(aaWorld.z, -30000, 30000, 0, 127);
+
+
+
+        MIDI.sendPitchBend(accx, MIDICHANNEL);
+        MIDI.sendAfterTouch(accy, MIDICHANNEL);
+       MIDI.sendControlChange(1, accz, MIDICHANNEL);
+      }
+
+    }
+
+  }
+
+  
+
+  
+}
+
+// ================================================================
+// ===                    MAIN PROGRAM LOOP                     ===
+// ================================================================
+
+void loop() {
+  // if programming failed, don't try to do anything
+  if (!dmpReady) return;
+  // read a packet from FIFO
+  if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { // Get the Latest packet
+
+
+#ifdef OUTPUT_READABLE_YAWPITCHROLL
+    // display Euler angles in degrees
+    mpu.dmpGetQuaternion(&q, fifoBuffer);
+    mpu.dmpGetGravity(&gravity, &q);
+    mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+    /*    Serial.print("ypr\t");
+        Serial.print(ypr[0] * 180 / M_PI);
+        Serial.print("\t");
+        Serial.print(ypr[1] * 180 / M_PI);
+        Serial.print("\t");
+        Serial.print(ypr[2] * 180 / M_PI);
+        /*
+          mpu.dmpGetAccel(&aa, fifoBuffer);
+          Serial.print("\tRaw Accl XYZ\t");
+          Serial.print(aa.x);
+          Serial.print("\t");
+          Serial.print(aa.y);
+          Serial.print("\t");
+          Serial.print(aa.z);
+          mpu.dmpGetGyro(&gy, fifoBuffer);
+          Serial.print("\tRaw Gyro XYZ\t");
+          Serial.print(gy.x);
+          Serial.print("\t");
+          Serial.print(gy.y);
+          Serial.print("\t");
+          Serial.print(gy.z);
+    */
+    //   Serial.println();
+
+#endif
+
+
+#ifdef OUTPUT_READABLE_WORLDACCEL
+    // display initial world-frame acceleration, adjusted to remove gravity
+    // and rotated based on known orientation from quaternion
+    mpu.dmpGetQuaternion(&q, fifoBuffer);
+    mpu.dmpGetAccel(&aa, fifoBuffer);
+    mpu.dmpGetGravity(&gravity, &q);
+    mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
+    mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+    /*
+        Serial.print("aworld\t");
+        Serial.print(aaWorld.x);
+        Serial.print("\t");
+        Serial.print(aaWorld.y);
+        Serial.print("\t");
+        Serial.print(aaWorld.z);
+        Serial.print("\t\t");
+    */
+#endif
+
+    //MIDI STUFF
+    //   MIDI.read();
+
+
+    int bend = ypr[0] * 180 / M_PI;
+    int bend1 = map(bend, -180, 180, -8192, 8191);
+
+    int bendy = ypr[1] * 180 / M_PI;
+    int bendy1 = map(bendy, -180, 180, 0, 127);
+
+    int bendz = ypr[2] * 180 / M_PI;
+    int bendz1 = map(bendz, -180, 180, 0, 127);
+
+    int accx = map(aaWorld.x, -30000, 30000, 0, 127);
+    int accy = map(aaWorld.y, -30000, 30000, 0, 127);
+    int accz = map(aaWorld.z, -30000, 30000, 0, 127);
+
+    //  PitchValues;
+    //  MIDI.sendPitchBend(bend1,1);
+    //   MIDI.sendAfterTouch(bendz1, 1);
+    /*  MIDI.sendControlChange(3, bendz1, 1);
+      MIDI.sendControlChange(4, bendy1, 1);
+      MIDI.sendControlChange(8, accx, 1);
+      MIDI.sendControlChange(9, accy, 1);
+      MIDI.sendControlChange(11, accz, 1);
+      MIDI.sendControlChange(64, 127, 1);
+
+    */
+
+
+    /*
+
+        if(aaReal.z > 10000) {
+            if(note1IsAlreadyOn) {
+       //Do nothing different
+             } else {
+               note1IsAlreadyOn = true;
+               MIDI.sendNoteOn (67, 100, 1);
+               currentMillis = millis();
+             }
+             } else {
+        //button is not currently pressed
+              if(millis() - currentMillis >= timer1) {
+              note1IsAlreadyOn = false;
+              MIDI.sendNoteOff (67, 100, 1);
+             } else {
+      //Do nothing different
+              }
+      }
+
+    */
+
+  }
+}
